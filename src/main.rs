@@ -6,8 +6,8 @@ use axum::{
     routing::get_service,
     Router,
 };
-use hyper::client::HttpConnector;
 use hyper::Client;
+use hyper::{body::to_bytes, client::HttpConnector};
 use hyper_rustls::HttpsConnectorBuilder;
 use matchit::Router as MatchItRouter;
 use serde::{Deserialize, Serialize};
@@ -112,8 +112,39 @@ async fn process_request(
 ) -> Result<Response<Body>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    let (parts, body) = req.into_parts();
+
+    let bytes = to_bytes(body).await?;
 
     tracing::info!("Processing request: {} {}", method, path);
+
+    // Log the payload based on Content-Type
+    if let Some(content_type) = parts
+        .headers
+        .get("Content-Type")
+        .and_then(|ct| ct.to_str().ok())
+    {
+        match content_type {
+            ct if ct.contains("application/json") => {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    tracing::info!("Request JSON payload: {}", json);
+                } else {
+                    tracing::info!("Request payload (invalid JSON): {:?}", bytes);
+                }
+            }
+            _ => {
+                // For other content types, log as bytes or convert to string if possible
+                if let Ok(body_str) = String::from_utf8(bytes.to_vec()) {
+                    tracing::info!("Request payload: {}", body_str);
+                } else {
+                    tracing::info!("Request payload (binary): {:?}", bytes);
+                }
+            }
+        }
+    } else {
+        // If no Content-Type header is present
+        tracing::info!("Request payload: {:?}", bytes);
+    }
 
     // Read the endpoints and router
     let endpoints = state.endpoints.read().await;
@@ -172,6 +203,7 @@ async fn process_request(
         "Proxying request to default backend: {}",
         state.default_endpoint
     );
+    let req = Request::from_parts(parts, Body::from(bytes.clone()));
     match proxy_request(req, state.clone()).await {
         Ok(response) => {
             tracing::info!("Proxied response: {}", response.status());
