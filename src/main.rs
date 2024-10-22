@@ -110,13 +110,11 @@ async fn process_request(
     state: AppState,
     req: Request<Body>,
 ) -> Result<Response<Body>, hyper::Error> {
-    let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    // Split the request into its parts and the body
     let (parts, body) = req.into_parts();
 
+    // Read the entire body
     let bytes = to_bytes(body).await?;
-
-    tracing::info!("Processing request: {} {}", method, path);
 
     // Log the payload based on Content-Type
     if let Some(content_type) = parts
@@ -146,6 +144,15 @@ async fn process_request(
         tracing::info!("Request payload: {:?}", bytes);
     }
 
+    // Reconstruct the request with the same body for further processing
+    let req = Request::from_parts(parts, Body::from(bytes.clone()));
+
+    // Continue with existing processing logic
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+
+    tracing::info!("Processing request: {} {}", method, path);
+
     // Read the endpoints and router
     let endpoints = state.endpoints.read().await;
     let router = state.router.read().await;
@@ -167,8 +174,8 @@ async fn process_request(
                 if let serde_json::Value::Object(ref mut map) = payload {
                     for (key, value) in params.iter() {
                         map.insert(
-                            key.to_string().clone(),
-                            serde_json::Value::String(value.to_string().clone()),
+                            key.to_string(),
+                            serde_json::Value::String(value.to_string()),
                         );
                     }
                 }
@@ -185,6 +192,9 @@ async fn process_request(
                 }
                 body
             };
+
+            // Log the response payload
+            tracing::info!("Response payload: {}", body);
 
             // Return the mocked response
             let response = Response::builder()
@@ -203,9 +213,9 @@ async fn process_request(
         "Proxying request to default backend: {}",
         state.default_endpoint
     );
-    let req = Request::from_parts(parts, Body::from(bytes.clone()));
     match proxy_request(req, state.clone()).await {
         Ok(response) => {
+            // Optionally, log the proxied response here
             tracing::info!("Proxied response: {}", response.status());
             Ok(response)
         }
@@ -215,7 +225,6 @@ async fn process_request(
         }
     }
 }
-
 async fn proxy_request(
     mut req: Request<Body>,
     state: AppState,
